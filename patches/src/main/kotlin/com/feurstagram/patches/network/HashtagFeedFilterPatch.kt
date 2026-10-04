@@ -1,6 +1,6 @@
 package com.feurstagram.patches.network
 
-import app.morphe.patcher.PatchException
+import app.morphe.patcher.patch.PatchException
 import app.morphe.patcher.extensions.InstructionExtensions.addInstructions
 import app.morphe.patcher.extensions.InstructionExtensions.instructions
 import app.morphe.patcher.patch.bytecodePatch
