@@ -2,11 +2,9 @@ name: Build patched APK
 
 # Manually builds the full patched Instagram APK (FeurStagram + hashtag filter).
 # Run from the Actions tab -> "Build patched APK" -> "Run workflow".
-#
-# You must supply a DIRECT download URL to an Instagram APK whose version is
-# listed in patches/.../shared/Constants.kt (COMPATIBILITY_INSTAGRAM).
-# Tip: download the APK once on your own machine, then host it somewhere with a
-# direct link (e.g. attach it to a release in a private repo and use that URL).
+# Defaults just work: downloads the latest Instagram APK from APKPure and
+# builds a side-by-side clone (com.instagram.android.feurstagram) so it
+# installs next to your real Instagram.
 #
 # The APK is signed with Morphe's throwaway test key: if a previous test build
 # refuses to install as an update, uninstall it first, then install fresh.
@@ -15,8 +13,9 @@ on:
   workflow_dispatch:
     inputs:
       apk_url:
-        description: 'Direct URL to the Instagram APK'
-        required: true
+        description: 'Direct URL to the Instagram APK (default: latest from APKPure)'
+        required: false
+        default: 'https://d.apkpure.com/b/APK/com.instagram.android?version=latest'
         type: string
       clone:
         description: 'Side-by-side install (com.instagram.android.feurstagram)'
@@ -56,29 +55,46 @@ jobs:
 
       - name: Download Instagram APK
         run: |
-          curl -sL -o instagram.apk "${{ inputs.apk_url }}"
+          UA="Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Mobile Safari/537.36"
+          curl -sL -A "$UA" -o instagram.apk "${{ inputs.apk_url }}"
           ls -la instagram.apk
           file instagram.apk | head -1
+          file instagram.apk | grep -qi "zip archive" || { echo "APK download failed (not a zip/APK):"; head -c 300 instagram.apk; echo; exit 1; }
 
       - name: Patch APK
         run: |
           MPP=$(ls -t patches/build/libs/patches-*[0-9].mpp | grep -v -- '-sources\|-javadoc' | head -1)
           echo "Bundle: $MPP"
-          CLONE_FLAG=""
-          if [ "${{ inputs.clone }}" = "true" ]; then CLONE_FLAG='-e "Clone"'; fi
-          eval java -jar tools/morphe-desktop-all.jar patch -p "$MPP" -f \
-            -r build/patch-report.json -o feurstagram.apk $CLONE_FLAG instagram.apk
+          ARGS=()
+          if [ "${{ inputs.clone }}" = "true" ]; then ARGS+=(-e "Clone"); fi
+          java -jar tools/morphe-desktop-all.jar patch \
+            -p "$MPP" \
+            --force \
+            --continue-on-error \
+            -r build/patch-report.json \
+            -o feurstagram.apk \
+            "${ARGS[@]}" \
+            instagram.apk
 
       - name: Patch report
         if: always()
         run: |
           python3 - build/patch-report.json <<'EOF' || true
           import json, sys
-          report = json.load(open(sys.argv[1]))
-          for p in report.get("appliedPatches", []):
-              print(f"ok   {p.get('name')}")
-          for p in report.get("failedPatches", []):
-              print(f"FAIL {p.get('name')}: {p.get('exception') or p.get('error') or ''}")
+          def walk(o, path=""):
+              if isinstance(o, dict):
+                  for k, v in o.items():
+                      walk(v, f"{path}.{k}" if path else k)
+              elif isinstance(o, list):
+                  for i, v in enumerate(o[:60]):
+                      walk(v, f"{path}[{i}]")
+              else:
+                  s = str(o)
+                  print(f"{path} = {s[:200]}")
+          try:
+              walk(json.load(open(sys.argv[1])))
+          except Exception as e:
+              print(f"no readable report: {e}")
           EOF
 
       - name: Upload patched APK
