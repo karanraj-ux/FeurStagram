@@ -4,7 +4,6 @@ import android.util.Log;
 
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -15,15 +14,20 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 /**
- * Hashtag-based feed filter, invoked from the feed-item JSON parse hook
- * (see HashtagFeedFilterPatch).
+ * Hashtag-based feed filter.
+ *
+ * <p>HOW IT WORKS (v2): the patch hooks Instagram's JSON parser factories
+ * (methods taking a raw JSON String and returning the obfuscated parser
+ * object). {@link #filterFeedJson} runs BEFORE parsing, on the real JSON
+ * string, where the full caption text is present. Non-matching media items
+ * are removed from the "items" array, so they never enter the feed.
  *
  * <p>Why this works despite Instagram hiding hashtags behind "more": the hook
  * runs at the JSON deserialisation layer, where the <b>full</b> caption text is
  * present. The collapsed caption is purely a UI rendering concern one layer up.
  *
- * <p>FAIL-OPEN BY DESIGN: any exception, any missing/unparseable caption, any
- * item with no classifiable hashtags returns the key unchanged, so the feed
+ * <p>FAIL-OPEN BY DESIGN: any exception, any missing/unparseable JSON, any
+ * item with no classifiable hashtags returns the input unchanged, so the feed
  * renders exactly as Instagram intended. Nothing here can crash the app or
  * empty the feed.
  */
@@ -33,20 +37,7 @@ public final class HashtagGate {
 
     private static final String TAG = "FeurHashtag";
 
-    /** Sink token shared with {@link Block}: the parser drops unknown types. */
-    private static final String INVALID_FEED_TYPE = "feurstagram_blocked";
-
     private static final Pattern HASHTAG = Pattern.compile("#[\\p{L}\\p{N}_]+");
-    private static final int MAX_JSON_CHARS = 1_000_000;
-    private static final int MAX_DEPTH = 8;
-    private static final int MAX_ARRAY_SCAN = 20;
-
-    /**
-     * Stashed by the patch immediately before each {@link #filterCurrentKey}
-     * call (feed parsing is single-threaded per parse loop; worst case a stale
-     * value fails open and the item is kept).
-     */
-    public static volatile Object lastItemJson;
 
     // ==================== EDIT YOUR HASHTAGS HERE ====================
     // Category id -> lowercase hashtags (with '#'). Matched against the
@@ -80,105 +71,65 @@ public final class HashtagGate {
     // ================================================================
 
     /**
-     * Patch entry point. Returns the type token to continue parsing with, or
-     * {@link #INVALID_FEED_TYPE} to drop the item. Never throws; never returns
-     * null unless the input key was null.
+     * Patch entry point. Called with the raw JSON response string BEFORE
+     * Instagram parses it. Removes feed items whose caption hashtags match none
+     * of the enabled categories, and returns the (possibly modified) JSON.
+     * Never throws; fails open by returning the input unchanged.
      */
-    public static String filterCurrentKey(String key) {
-        if (key == null) return null;
-        try {
-            if (!Config.getBlocked("hashtag_filter_enabled", false)) return key;
-            if (INVALID_FEED_TYPE.equals(key)) return key; // already dropped upstream
-
-            String caption = captionOf(lastItemJson);
-            if (caption == null || caption.isEmpty()) return key; // unclassifiable: fail open
-
-            Set<String> tags = hashtagsIn(caption);
-            if (tags.isEmpty()) return key; // no hashtags: fail open
-
-            for (Map.Entry<String, Set<String>> e : CATEGORY_TAGS.entrySet()) {
-                String prefKey = CATEGORY_PREF_KEYS.get(e.getKey());
-                if (prefKey == null || !Config.getBlocked(prefKey, true)) continue;
-                for (String t : tags) {
-                    if (e.getValue().contains(t)) {
-                        Log.i(TAG, "keep [" + key + "] tag=" + t);
-                        return key;
-                    }
-                }
-            }
-            Log.i(TAG, "drop [" + key + "] tags=" + tags);
-            return INVALID_FEED_TYPE;
-        } catch (Throwable t) {
-            Log.w(TAG, "fail-open", t);
-            return key;
-        }
-    }
-
-    /** Extract the caption text from the stashed item JSON, or null. */
-    private static String captionOf(Object jsonInput) {
-        String json = toJsonString(jsonInput);
+    public static String filterFeedJson(String json) {
         if (json == null) return null;
         try {
-            return findCaptionText(new JSONObject(json), 0);
-        } catch (Throwable t) {
-            Log.w(TAG, "caption parse failed", t);
-            return null;
-        }
-    }
+            if (!Config.getBlocked("hashtag_filter_enabled", false)) return json;
+            // Fast path: not a feed-like response.
+            if (!json.contains("media_or_ad")) return json;
 
-    /** Normalise the hook's JSON parameter to a String. Null when unusable. */
-    private static String toJsonString(Object o) {
-        try {
-            if (o instanceof String) {
-                String s = (String) o;
-                return s.length() > MAX_JSON_CHARS ? null : s;
-            }
-            if (o == null) return null;
-            String s = o.toString(); // JSONObject / gson JsonObject / ...
-            if (s == null || !s.startsWith("{")) {
-                Log.w(TAG, "unexpected JSON param type: " + o.getClass().getName());
-                return null;
-            }
-            return s.length() > MAX_JSON_CHARS ? null : s;
-        } catch (Throwable t) {
-            return null;
-        }
-    }
+            JSONObject root = new JSONObject(json);
+            JSONArray items = root.optJSONArray("items");
+            if (items == null) return json;
 
-    /**
-     * Recursive search for {"caption": {"text": "..."}} (or "caption": "...").
-     * Depth- and breadth-bounded so a pathological payload cannot hang the UI.
-     */
-    private static String findCaptionText(JSONObject obj, int depth) {
-        if (obj == null || depth > MAX_DEPTH) return null;
+            int total = items.length();
+            int removed = 0;
+            for (int i = total - 1; i >= 0; i--) {
+                JSONObject item = items.optJSONObject(i);
+                if (item == null) continue;
+                JSONObject media = item.optJSONObject("media_or_ad");
+                if (media == null) continue; // not a media item: keep
 
-        Object cap = obj.opt("caption");
-        if (cap instanceof JSONObject) {
-            String text = ((JSONObject) cap).optString("text", null);
-            if (text != null && !text.isEmpty()) return text;
-        } else if (cap instanceof String) {
-            String s = (String) cap;
-            if (!s.isEmpty()) return s;
-        }
+                String caption = "";
+                JSONObject capObj = media.optJSONObject("caption");
+                if (capObj != null) caption = capObj.optString("text", "");
+                if (caption.isEmpty()) continue; // unclassifiable: fail open
 
-        Iterator<String> keys = obj.keys();
-        while (keys.hasNext()) {
-            Object v = obj.opt(keys.next());
-            if (v instanceof JSONObject) {
-                String r = findCaptionText((JSONObject) v, depth + 1);
-                if (r != null) return r;
-            } else if (v instanceof JSONArray) {
-                JSONArray a = (JSONArray) v;
-                for (int i = 0, n = Math.min(a.length(), MAX_ARRAY_SCAN); i < n; i++) {
-                    Object e = a.opt(i);
-                    if (e instanceof JSONObject) {
-                        String r = findCaptionText((JSONObject) e, depth + 1);
-                        if (r != null) return r;
-                    }
+                Set<String> tags = hashtagsIn(caption);
+                if (tags.isEmpty()) continue; // no hashtags: fail open
+
+                if (!matchesEnabledCategories(tags)) {
+                    items.remove(i);
+                    removed++;
+                    if (removed <= 5) Log.i(TAG, "drop [media_or_ad] tags=" + tags);
                 }
             }
+            if (removed > 0) {
+                Log.i(TAG, "feed filter: removed " + removed + "/" + total + " items");
+                return root.toString();
+            }
+            return json;
+        } catch (Throwable t) {
+            Log.w(TAG, "filterFeedJson fail-open", t);
+            return json;
         }
-        return null;
+    }
+
+    /** True if any of the caption's hashtags is in an enabled category. */
+    private static boolean matchesEnabledCategories(Set<String> tags) {
+        for (Map.Entry<String, Set<String>> e : CATEGORY_TAGS.entrySet()) {
+            String prefKey = CATEGORY_PREF_KEYS.get(e.getKey());
+            if (prefKey == null || !Config.getBlocked(prefKey, true)) continue;
+            for (String t : tags) {
+                if (e.getValue().contains(t)) return true;
+            }
+        }
+        return false;
     }
 
     /** Lower-cased hashtags found in the caption. */
