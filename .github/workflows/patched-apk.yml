@@ -1,0 +1,94 @@
+name: Build patched APK
+
+# Manually builds the full patched Instagram APK (FeurStagram + hashtag filter).
+# Run from the Actions tab -> "Build patched APK" -> "Run workflow".
+#
+# You must supply a DIRECT download URL to an Instagram APK whose version is
+# listed in patches/.../shared/Constants.kt (COMPATIBILITY_INSTAGRAM).
+# Tip: download the APK once on your own machine, then host it somewhere with a
+# direct link (e.g. attach it to a release in a private repo and use that URL).
+#
+# The APK is signed with Morphe's throwaway test key: if a previous test build
+# refuses to install as an update, uninstall it first, then install fresh.
+
+on:
+  workflow_dispatch:
+    inputs:
+      apk_url:
+        description: 'Direct URL to the Instagram APK'
+        required: true
+        type: string
+      clone:
+        description: 'Side-by-side install (com.instagram.android.feurstagram)'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_ACTOR: ${{ github.actor }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build patch bundle
+        run: ./gradlew :patches:build --no-daemon
+
+      - name: Download Morphe CLI
+        run: |
+          mkdir -p tools build
+          URL=$(curl -s https://api.github.com/repos/MorpheApp/morphe-desktop/releases/latest \
+            | python3 -c "import json,sys; r=json.load(sys.stdin); print([a['browser_download_url'] for a in r['assets'] if a['name'].endswith('-all.jar')][0])")
+          echo "CLI: $URL"
+          curl -sL -o tools/morphe-desktop-all.jar "$URL"
+          java -jar tools/morphe-desktop-all.jar --version
+
+      - name: Download Instagram APK
+        run: |
+          curl -sL -o instagram.apk "${{ inputs.apk_url }}"
+          ls -la instagram.apk
+          file instagram.apk | head -1
+
+      - name: Patch APK
+        run: |
+          MPP=$(ls -t patches/build/libs/patches-*[0-9].mpp | grep -v -- '-sources\|-javadoc' | head -1)
+          echo "Bundle: $MPP"
+          CLONE_FLAG=""
+          if [ "${{ inputs.clone }}" = "true" ]; then CLONE_FLAG='-e "Clone"'; fi
+          eval java -jar tools/morphe-desktop-all.jar patch -p "$MPP" -f \
+            -r build/patch-report.json -o feurstagram.apk $CLONE_FLAG instagram.apk
+
+      - name: Patch report
+        if: always()
+        run: |
+          python3 - build/patch-report.json <<'EOF' || true
+          import json, sys
+          report = json.load(open(sys.argv[1]))
+          for p in report.get("appliedPatches", []):
+              print(f"ok   {p.get('name')}")
+          for p in report.get("failedPatches", []):
+              print(f"FAIL {p.get('name')}: {p.get('exception') or p.get('error') or ''}")
+          EOF
+
+      - name: Upload patched APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: feurstagram-apk
+          path: feurstagram.apk
+          if-no-files-found: error
+
+      - name: Upload patch report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: patch-report
+          path: build/patch-report.json

@@ -441,6 +441,12 @@ public final class Settings {
         addRow(context, surfaces, "Notes", "block_notes", Config.isNotesBlocked());
         addRow(context, surfaces, "Suggested accounts", "block_suggested", Config.isSuggestedBlocked());
         addRow(context, surfaces, "Ads", "block_ads", Config.isAdsBlocked());
+        addRow(context, surfaces, "Hashtag filter", "hashtag_filter_enabled",
+                Config.getBlocked("hashtag_filter_enabled", false));
+        addRow(context, surfaces, "  Education tags", "hashtag_cat_education",
+                Config.getBlocked("hashtag_cat_education", true));
+        addRow(context, surfaces, "  Tech tags", "hashtag_cat_tech",
+                Config.getBlocked("hashtag_cat_tech", true));
         addRow(context, surfaces, "Notifications button", "block_notifications",
                 Config.isNotificationsButtonBlocked());
         sealGroup(context, surfaces);
@@ -826,6 +832,9 @@ public final class Settings {
     private static String supportText(String key) {
         if (key.equals("auto_update")) return "Check GitHub for a new version on launch.";
         if (key.equals("block_ads")) return "Block sponsored ads across Instagram.";
+        if (key.equals("hashtag_filter_enabled")) return "Keep only posts whose hashtags match your categories.";
+        if (key.equals("hashtag_cat_education")) return "Education hashtags keep the post.";
+        if (key.equals("hashtag_cat_tech")) return "Tech hashtags keep the post.";
         if (key.equals("limit_following_feed")) return "Show only accounts you follow (needs the feed unblocked).";
         if (key.equals("hide_toasts")) return "Hide every Instagram popup, including “couldn’t refresh feed”.";
         if (key.equals("force_sdr")) return "Keep blacks deep by stopping Instagram forcing HDR on the UI.";
