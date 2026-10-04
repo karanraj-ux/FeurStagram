@@ -55,10 +55,15 @@ jobs:
       - name: Download Instagram APK
         run: |
           UA="Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Mobile Safari/537.36"
-          curl -sL -A "$UA" -o instagram.apk "${{ inputs.apk_url }}"
-          ls -la instagram.apk
-          file instagram.apk | head -1
-          file instagram.apk | grep -qi "zip archive" || { echo "APK download failed (not a zip/APK):"; head -c 300 instagram.apk; echo; exit 1; }
+          URL="${{ inputs.apk_url }}"
+          EXT="${URL##*.}"; EXT="${EXT%%\?*}"; EXT="$(echo "$EXT" | tr '[:upper:]' '[:lower:]')"
+          case "$EXT" in apk|xapk|apkm|apks) ;; *) EXT="apk" ;; esac
+          echo "Downloading as instagram.$EXT"
+          curl -sL -A "$UA" -o "instagram.$EXT" "$URL"
+          ls -la "instagram.$EXT"
+          file "instagram.$EXT" | head -1
+          file "instagram.$EXT" | grep -qi "zip archive" || { echo "APK download failed (not a zip/APK):"; head -c 300 "instagram.$EXT"; echo; exit 1; }
+          echo "APK_FILE=instagram.$EXT" >> "$GITHUB_ENV"
 
       - name: Patch APK
         run: |
@@ -73,7 +78,7 @@ jobs:
             -r build/patch-report.json \
             -o feurstagram.apk \
             "${ARGS[@]}" \
-            instagram.apk
+            "$APK_FILE"
 
       - name: Patch report
         if: always()
