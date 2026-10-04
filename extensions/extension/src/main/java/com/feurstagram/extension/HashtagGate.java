@@ -4,6 +4,7 @@ import android.util.Log;
 
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -38,6 +39,9 @@ public final class HashtagGate {
     private static final String TAG = "FeurHashtag";
 
     private static final Pattern HASHTAG = Pattern.compile("#[\\p{L}\\p{N}_]+");
+
+    /** One-shot diagnostic flag: log the feed JSON structure once per process. */
+    private static volatile boolean sStructureLogged;
 
     // ==================== EDIT YOUR HASHTAGS HERE ====================
     // Category id -> lowercase hashtags (with '#'). Matched against the
@@ -84,6 +88,33 @@ public final class HashtagGate {
             if (!json.contains("media_or_ad")) return json;
 
             JSONObject root = new JSONObject(json);
+
+            // DIAGNOSTIC: log the actual top-level structure once, so we can
+            // remap if the feed doesn't use the expected "items" array.
+            if (!sStructureLogged) {
+                sStructureLogged = true;
+                StringBuilder keys = new StringBuilder();
+                Iterator<String> it = root.keys();
+                while (it.hasNext()) {
+                    if (keys.length() > 0) keys.append(",");
+                    keys.append(it.next());
+                }
+                Log.i(TAG, "diag: top-level keys=[" + keys + "]");
+                JSONArray items0 = root.optJSONArray("items");
+                if (items0 != null && items0.length() > 0) {
+                    JSONObject first = items0.optJSONObject(0);
+                    if (first != null) {
+                        StringBuilder k2 = new StringBuilder();
+                        Iterator<String> it2 = first.keys();
+                        while (it2.hasNext()) {
+                            if (k2.length() > 0) k2.append(",");
+                            k2.append(it2.next());
+                        }
+                        Log.i(TAG, "diag: first item keys=[" + k2 + "]");
+                    }
+                }
+            }
+
             JSONArray items = root.optJSONArray("items");
             if (items == null) return json;
 
