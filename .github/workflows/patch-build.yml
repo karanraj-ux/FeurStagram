@@ -10,12 +10,18 @@ on:
       - 'patches/**'
       - 'extensions/**'
       - 'gradle/**'
+      - 'settings.gradle.kts'
+      - 'settings.gradle'
+      - 'gradle.properties'
+      - 'build.gradle.kts'
       - '.github/workflows/patch-build.yml'
   pull_request:
     paths:
       - 'patches/**'
       - 'extensions/**'
       - 'gradle/**'
+      - 'settings.gradle.kts'
+      - 'gradle.properties'
   workflow_dispatch:
 
 jobs:
