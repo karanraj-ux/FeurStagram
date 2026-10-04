@@ -13,9 +13,8 @@ on:
   workflow_dispatch:
     inputs:
       apk_url:
-        description: 'Direct URL to the Instagram APK (default: latest from APKPure)'
-        required: false
-        default: 'https://d.apkpure.com/b/APK/com.instagram.android?version=latest'
+        description: 'Direct URL to the Instagram APK file (upload it to catbox.moe from your phone, paste the files.catbox.moe link here)'
+        required: true
         type: string
       clone:
         description: 'Side-by-side install (com.instagram.android.feurstagram)'
