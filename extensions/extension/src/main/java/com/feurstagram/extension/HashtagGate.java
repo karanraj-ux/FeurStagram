@@ -141,7 +141,8 @@ public final class HashtagGate {
                     keys.append(it.next());
                 }
                 diagLog("diag: top-level keys=[" + keys + "]");
-                JSONArray items0 = root.optJSONArray("items");
+                JSONArray items0 = root.optJSONArray("feed_items");
+                if (items0 == null) items0 = root.optJSONArray("items");
                 if (items0 != null && items0.length() > 0) {
                     JSONObject first = items0.optJSONObject(0);
                     if (first != null) {
@@ -158,7 +159,9 @@ public final class HashtagGate {
                 }
             }
 
-            JSONArray items = root.optJSONArray("items");
+            // The timeline API uses "feed_items"; other endpoints may use "items".
+            JSONArray items = root.optJSONArray("feed_items");
+            if (items == null) items = root.optJSONArray("items");
             if (items == null) return json;
 
             int total = items.length();
