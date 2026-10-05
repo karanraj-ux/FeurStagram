@@ -1,7 +1,11 @@
 package com.feurstagram.extension;
 
+import android.os.Environment;
 import android.util.Log;
 
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -42,6 +46,32 @@ public final class HashtagGate {
 
     /** One-shot diagnostic flag: log the feed JSON structure once per process. */
     private static volatile boolean sStructureLogged;
+
+    /**
+     * Write a diagnostic line to /sdcard/Download/FeurHashtag.log so it can be
+     * read via Termux (cat /sdcard/Download/FeurHashtag.log) without ADB.
+     * Fail-silent: never crashes the app if storage is unavailable.
+     */
+    private static void fileLog(String msg) {
+        try {
+            File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+            if (dir == null) return;
+            File log = new File(dir, "FeurHashtag.log");
+            FileWriter w = new FileWriter(log, true);
+            try {
+                w.write(msg + "\n");
+            } finally {
+                w.close();
+            }
+        } catch (IOException | SecurityException ignored) {
+        }
+    }
+
+    /** Log to both logcat and the file. */
+    private static void diagLog(String msg) {
+        Log.i(TAG, msg);
+        fileLog(msg);
+    }
 
     // ==================== EDIT YOUR HASHTAGS HERE ====================
     // Category id -> lowercase hashtags (with '#'). Matched against the
@@ -99,7 +129,7 @@ public final class HashtagGate {
                     if (keys.length() > 0) keys.append(",");
                     keys.append(it.next());
                 }
-                Log.i(TAG, "diag: top-level keys=[" + keys + "]");
+                diagLog("diag: top-level keys=[" + keys + "]");
                 JSONArray items0 = root.optJSONArray("items");
                 if (items0 != null && items0.length() > 0) {
                     JSONObject first = items0.optJSONObject(0);
@@ -110,8 +140,10 @@ public final class HashtagGate {
                             if (k2.length() > 0) k2.append(",");
                             k2.append(it2.next());
                         }
-                        Log.i(TAG, "diag: first item keys=[" + k2 + "]");
+                        diagLog("diag: first item keys=[" + k2 + "]");
                     }
+                } else {
+                    diagLog("diag: no 'items' array found");
                 }
             }
 
@@ -137,11 +169,11 @@ public final class HashtagGate {
                 if (!matchesEnabledCategories(tags)) {
                     items.remove(i);
                     removed++;
-                    if (removed <= 5) Log.i(TAG, "drop [media_or_ad] tags=" + tags);
+                    if (removed <= 5) diagLog("drop [media_or_ad] tags=" + tags);
                 }
             }
             if (removed > 0) {
-                Log.i(TAG, "feed filter: removed " + removed + "/" + total + " items");
+                diagLog("feed filter: removed " + removed + "/" + total + " items");
                 return root.toString();
             }
             return json;
