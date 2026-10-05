@@ -55,6 +55,53 @@ public final class HashtagGate {
     /** Diagnostic: count of feed-like JSONs seen (for rate-limited logging). */
     private static volatile int sFeedSeenCount;
 
+    /** Diagnostic: count of ALL factory calls (for rate-limited logging). */
+    private static volatile int sTotalCalls;
+
+    /**
+     * Surgical diagnostic: log which factory method called us, via stack trace.
+     * Returns e.g. "X.01yu.B3N" or "unknown".
+     */
+    private static String callerFactory() {
+        try {
+            StackTraceElement[] stack = Thread.currentThread().getStackTrace();
+            for (StackTraceElement e : stack) {
+                String cls = e.getClassName();
+                // Skip our own frames and system frames
+                if (cls.startsWith("com.feurstagram.")) continue;
+                if (cls.startsWith("java.")) continue;
+                if (cls.startsWith("android.")) continue;
+                if (cls.startsWith("dalvik.")) continue;
+                // First app frame is the factory (e.g., X.01yu) or its caller
+                return cls + "." + e.getMethodName();
+            }
+        } catch (Throwable ignored) {}
+        return "unknown";
+    }
+
+    /**
+     * Surgical diagnostic: log the full call chain (first 12 app frames).
+     */
+    private static void logStack() {
+        try {
+            StackTraceElement[] stack = Thread.currentThread().getStackTrace();
+            StringBuilder sb = new StringBuilder("diag: stack=[");
+            int n = 0;
+            for (StackTraceElement e : stack) {
+                String cls = e.getClassName();
+                if (cls.startsWith("com.feurstagram.")) continue;
+                if (cls.startsWith("java.lang.Thread")) continue;
+                if (n > 0) sb.append(" <- ");
+                // Shorten: X.01yu.B3N -> 01yu.B3N
+                String shortCls = cls.startsWith("X.") ? cls.substring(2) : cls;
+                sb.append(shortCls).append(".").append(e.getMethodName());
+                if (++n >= 12) break;
+            }
+            sb.append("]");
+            diagLog(sb.toString());
+        } catch (Throwable ignored) {}
+    }
+
     /**
      * Write a diagnostic line to /sdcard/Download/FeurHashtag.log so it can be
      * read via Termux (cat /sdcard/Download/FeurHashtag.log) without ADB.
@@ -120,10 +167,22 @@ public final class HashtagGate {
      */
     public static String filterFeedJson(String json) {
         if (json == null) return null;
-        // Diagnostic: log every feed-like JSON (contains feed_items or media_or_ad),
-        // with a snippet. Rate-limited to first 20 to avoid log spam.
+        // SURGICAL DIAGNOSTIC: log every factory call with the calling factory
+        // name and a snippet. Rate-limited to first 40 to avoid log spam.
+        // This tells us exactly which factories fire, for what data, and when.
+        int callNum = ++sTotalCalls;
         boolean isFeedLike = json.contains("feed_items") || json.contains("media_or_ad");
-        if (isFeedLike && sFeedSeenCount < 20) {
+        if (callNum <= 40) {
+            String factory = callerFactory();
+            String snippet = json.length() > 200 ? json.substring(0, 200) : json;
+            // Compact the snippet: remove newlines
+            snippet = snippet.replace('\n', ' ').replace('\r', ' ');
+            diagLog("diag: CALL #" + callNum + " factory=[" + factory + "] feedLike=" + isFeedLike + " snippet=[" + snippet + "]");
+            if (isFeedLike) {
+                sFeedSeenCount++;
+                logStack();
+            }
+        } else if (isFeedLike && sFeedSeenCount < 20) {
             sFeedSeenCount++;
             String snippet = json.length() > 300 ? json.substring(0, 300) : json;
             diagLog("diag: FEED JSON #" + sFeedSeenCount + " snippet=[" + snippet + "]");
