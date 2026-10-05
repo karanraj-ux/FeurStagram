@@ -3,9 +3,17 @@ package com.feurstagram.extension;
 import android.os.Environment;
 import android.util.Log;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.CharArrayReader;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.Reader;
+import java.io.StringReader;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -44,11 +52,8 @@ public final class HashtagGate {
 
     private static final Pattern HASHTAG = Pattern.compile("#[\\p{L}\\p{N}_]+");
 
-    /** One-shot diagnostic flag: log the feed JSON structure once per process. */
-    private static volatile boolean sStructureLogged;
-
-    /** One-shot: confirm the hook is hit at all. */
-    private static volatile boolean sHookHitLogged;
+    /** Diagnostic: count of feed-like JSONs seen (for rate-limited logging). */
+    private static volatile int sFeedSeenCount;
 
     /**
      * Write a diagnostic line to /sdcard/Download/FeurHashtag.log so it can be
@@ -115,25 +120,23 @@ public final class HashtagGate {
      */
     public static String filterFeedJson(String json) {
         if (json == null) return null;
-        // UNCONDITIONAL one-shot: confirm the hook is hit at all, and capture
-        // what the JSON looks like (first 300 chars). This runs before any
-        // fast-path checks so we see ALL traffic through the hooked factories.
-        if (!sHookHitLogged) {
-            sHookHitLogged = true;
+        // Diagnostic: log every feed-like JSON (contains feed_items or media_or_ad),
+        // with a snippet. Rate-limited to first 20 to avoid log spam.
+        boolean isFeedLike = json.contains("feed_items") || json.contains("media_or_ad");
+        if (isFeedLike && sFeedSeenCount < 20) {
+            sFeedSeenCount++;
             String snippet = json.length() > 300 ? json.substring(0, 300) : json;
-            diagLog("diag: HOOK HIT! json snippet=[" + snippet + "]");
+            diagLog("diag: FEED JSON #" + sFeedSeenCount + " snippet=[" + snippet + "]");
         }
         try {
             if (!Config.getBlocked("hashtag_filter_enabled", false)) return json;
             // Fast path: not a feed-like response.
-            if (!json.contains("media_or_ad")) return json;
+            if (!isFeedLike) return json;
 
             JSONObject root = new JSONObject(json);
 
-            // DIAGNOSTIC: log the actual top-level structure once, so we can
-            // remap if the feed doesn't use the expected "items" array.
-            if (!sStructureLogged) {
-                sStructureLogged = true;
+            // Diagnostic: log top-level keys for the first few feed JSONs
+            if (sFeedSeenCount <= 3) {
                 StringBuilder keys = new StringBuilder();
                 Iterator<String> it = root.keys();
                 while (it.hasNext()) {
@@ -141,22 +144,6 @@ public final class HashtagGate {
                     keys.append(it.next());
                 }
                 diagLog("diag: top-level keys=[" + keys + "]");
-                JSONArray items0 = root.optJSONArray("feed_items");
-                if (items0 == null) items0 = root.optJSONArray("items");
-                if (items0 != null && items0.length() > 0) {
-                    JSONObject first = items0.optJSONObject(0);
-                    if (first != null) {
-                        StringBuilder k2 = new StringBuilder();
-                        Iterator<String> it2 = first.keys();
-                        while (it2.hasNext()) {
-                            if (k2.length() > 0) k2.append(",");
-                            k2.append(it2.next());
-                        }
-                        diagLog("diag: first item keys=[" + k2 + "]");
-                    }
-                } else {
-                    diagLog("diag: no 'items' array found");
-                }
             }
 
             // The timeline API uses "feed_items"; other endpoints may use "items".
@@ -215,5 +202,108 @@ public final class HashtagGate {
         Matcher m = HASHTAG.matcher(caption);
         while (m.find()) out.add(m.group().toLowerCase(Locale.ROOT));
         return out;
+    }
+
+    // ==================== Non-String factory wrappers ====================
+    // These are called by the patch hooks on InputStream/byte[]/Reader/char[]
+    // parser factories. They convert to String, run filterFeedJson, and convert
+    // back. All fail-open: on any error, return the input unchanged.
+
+    /** For InputStream-based factories (e.g., B3M, A0E, A0A). */
+    public static InputStream filterFeedStream(InputStream in) {
+        if (in == null) return null;
+        try {
+            String json = readStream(in);
+            String filtered = filterFeedJson(json);
+            if (filtered == json) return in; // unchanged: return original
+            return new ByteArrayInputStream(filtered.getBytes(StandardCharsets.UTF_8));
+        } catch (Throwable t) {
+            Log.w(TAG, "filterFeedStream fail-open", t);
+            return in;
+        }
+    }
+
+    /** For byte[]-based factories (e.g., A0F). */
+    public static byte[] filterFeedBytes(byte[] data) {
+        if (data == null) return null;
+        try {
+            String json = new String(data, StandardCharsets.UTF_8);
+            String filtered = filterFeedJson(json);
+            if (filtered == json) return data; // unchanged
+            return filtered.getBytes(StandardCharsets.UTF_8);
+        } catch (Throwable t) {
+            Log.w(TAG, "filterFeedBytes fail-open", t);
+            return data;
+        }
+    }
+
+    /**
+     * For byte[]-with-offset factories (e.g., A0C with [B I).
+     * Filters the bytes from offset, returns a new array; caller sets offset to 0.
+     */
+    public static byte[] filterFeedBytesWithOffset(byte[] data, int offset) {
+        if (data == null) return null;
+        try {
+            int len = data.length - offset;
+            if (len <= 0) return data;
+            String json = new String(data, offset, len, StandardCharsets.UTF_8);
+            String filtered = filterFeedJson(json);
+            if (filtered == json) return data; // unchanged
+            return filtered.getBytes(StandardCharsets.UTF_8);
+        } catch (Throwable t) {
+            Log.w(TAG, "filterFeedBytesWithOffset fail-open", t);
+            return data;
+        }
+    }
+
+    /** For Reader-based factories (e.g., A0B). */
+    public static Reader filterFeedReader(Reader reader) {
+        if (reader == null) return null;
+        try {
+            String json = readReader(reader);
+            String filtered = filterFeedJson(json);
+            if (filtered == json) return reader; // unchanged
+            return new StringReader(filtered);
+        } catch (Throwable t) {
+            Log.w(TAG, "filterFeedReader fail-open", t);
+            return reader;
+        }
+    }
+
+    /**
+     * For char[]-with-offset factories (e.g., A0D with [C I).
+     * Filters the chars from offset, returns a new array; caller sets offset to 0.
+     */
+    public static char[] filterFeedChars(char[] data, int offset) {
+        if (data == null) return null;
+        try {
+            int len = data.length - offset;
+            if (len <= 0) return data;
+            String json = new String(data, offset, len);
+            String filtered = filterFeedJson(json);
+            if (filtered == json) return data; // unchanged
+            return filtered.toCharArray();
+        } catch (Throwable t) {
+            Log.w(TAG, "filterFeedChars fail-open", t);
+            return data;
+        }
+    }
+
+    /** Read an InputStream fully to a UTF-8 string. */
+    private static String readStream(InputStream in) throws IOException {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
+        return out.toString("UTF-8");
+    }
+
+    /** Read a Reader fully to a string. */
+    private static String readReader(Reader reader) throws IOException {
+        StringBuilder sb = new StringBuilder();
+        char[] buf = new char[8192];
+        int n;
+        while ((n = reader.read(buf)) != -1) sb.append(buf, 0, n);
+        return sb.toString();
     }
 }
