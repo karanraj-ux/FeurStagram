@@ -47,6 +47,9 @@ public final class HashtagGate {
     /** One-shot diagnostic flag: log the feed JSON structure once per process. */
     private static volatile boolean sStructureLogged;
 
+    /** One-shot: confirm the hook is hit at all. */
+    private static volatile boolean sHookHitLogged;
+
     /**
      * Write a diagnostic line to /sdcard/Download/FeurHashtag.log so it can be
      * read via Termux (cat /sdcard/Download/FeurHashtag.log) without ADB.
@@ -112,6 +115,14 @@ public final class HashtagGate {
      */
     public static String filterFeedJson(String json) {
         if (json == null) return null;
+        // UNCONDITIONAL one-shot: confirm the hook is hit at all, and capture
+        // what the JSON looks like (first 300 chars). This runs before any
+        // fast-path checks so we see ALL traffic through the hooked factories.
+        if (!sHookHitLogged) {
+            sHookHitLogged = true;
+            String snippet = json.length() > 300 ? json.substring(0, 300) : json;
+            diagLog("diag: HOOK HIT! json snippet=[" + snippet + "]");
+        }
         try {
             if (!Config.getBlocked("hashtag_filter_enabled", false)) return json;
             // Fast path: not a feed-like response.
