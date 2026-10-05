@@ -215,7 +215,7 @@ public final class HashtagGate {
         try {
             String json = readStream(in);
             String filtered = filterFeedJson(json);
-            if (filtered == json) return in; // unchanged: return original
+            // Always return a fresh stream: the original is consumed by readStream.
             return new ByteArrayInputStream(filtered.getBytes(StandardCharsets.UTF_8));
         } catch (Throwable t) {
             Log.w(TAG, "filterFeedStream fail-open", t);
@@ -262,7 +262,7 @@ public final class HashtagGate {
         try {
             String json = readReader(reader);
             String filtered = filterFeedJson(json);
-            if (filtered == json) return reader; // unchanged
+            // Always return a fresh reader: the original is consumed by readReader.
             return new StringReader(filtered);
         } catch (Throwable t) {
             Log.w(TAG, "filterFeedReader fail-open", t);
