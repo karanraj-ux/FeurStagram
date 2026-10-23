@@ -164,18 +164,23 @@ public final class HashtagGate {
      * Instagram parses it. Removes feed items whose caption hashtags match none
      * of the enabled categories, and returns the (possibly modified) JSON.
      * Never throws; fails open by returning the input unchanged.
+     *
+     * <p>Handles two feed structures (verified by bytecode RE):
+     * <ul>
+     *   <li>Timeline: {"feed_items": [{"media_or_ad": {"caption": {"text": ...}}}]}
+     *   <li>Clips/Reels: {"items": [{"media": {"caption": {"text": ...}}}],
+     *       "paging_info": {...}} — caption chain ClipsItemDict.Cdd().A35().CeU()
+     * </ul>
      */
     public static String filterFeedJson(String json) {
         if (json == null) return null;
-        // SURGICAL DIAGNOSTIC: log every factory call with the calling factory
-        // name and a snippet. Rate-limited to first 40 to avoid log spam.
-        // This tells us exactly which factories fire, for what data, and when.
         int callNum = ++sTotalCalls;
-        boolean isFeedLike = json.contains("feed_items") || json.contains("media_or_ad");
+        // Feed-like: timeline (feed_items/media_or_ad) or clips (paging_info/items).
+        boolean isFeedLike = json.contains("feed_items") || json.contains("media_or_ad")
+                || json.contains("paging_info");
         if (callNum <= 40) {
             String factory = callerFactory();
             String snippet = json.length() > 200 ? json.substring(0, 200) : json;
-            // Compact the snippet: remove newlines
             snippet = snippet.replace('\n', ' ').replace('\r', ' ');
             diagLog("diag: CALL #" + callNum + " factory=[" + factory + "] feedLike=" + isFeedLike + " snippet=[" + snippet + "]");
             if (isFeedLike) {
@@ -212,24 +217,54 @@ public final class HashtagGate {
 
             int total = items.length();
             int removed = 0;
+            // Log item structure for the first clips/timeline JSON to verify paths.
+            boolean logStructure = (sFeedSeenCount <= 2);
             for (int i = total - 1; i >= 0; i--) {
                 JSONObject item = items.optJSONObject(i);
                 if (item == null) continue;
+
+                // Timeline: item.media_or_ad.caption.text
+                // Clips:    item.media.caption.text  (ClipsItemDict.Cdd() -> Media)
+                // Fallback: item.caption.text
                 JSONObject media = item.optJSONObject("media_or_ad");
-                if (media == null) continue; // not a media item: keep
+                String mediaKey = "media_or_ad";
+                if (media == null) {
+                    media = item.optJSONObject("media");
+                    mediaKey = "media";
+                }
+                if (logStructure && i == total - 1) {
+                    StringBuilder ikeys = new StringBuilder();
+                    Iterator<String> iit = item.keys();
+                    while (iit.hasNext()) {
+                        if (ikeys.length() > 0) ikeys.append(",");
+                        ikeys.append(iit.next());
+                    }
+                    diagLog("diag: item keys=[" + ikeys + "] mediaKey=" + mediaKey);
+                    logStructure = false;
+                }
+                if (media == null) {
+                    // Try direct caption on the item itself.
+                    String caption = "";
+                    JSONObject capObj = item.optJSONObject("caption");
+                    if (capObj != null) caption = capObj.optString("text", "");
+                    if (caption.isEmpty()) continue; // unclassifiable: fail open
+                    if (!keepCaption(caption, mediaKey)) {
+                        items.remove(i);
+                        removed++;
+                        if (removed <= 5) diagLog("drop [direct] tags=" + hashtagsIn(caption));
+                    }
+                    continue;
+                }
 
                 String caption = "";
                 JSONObject capObj = media.optJSONObject("caption");
                 if (capObj != null) caption = capObj.optString("text", "");
                 if (caption.isEmpty()) continue; // unclassifiable: fail open
 
-                Set<String> tags = hashtagsIn(caption);
-                if (tags.isEmpty()) continue; // no hashtags: fail open
-
-                if (!matchesEnabledCategories(tags)) {
+                if (!keepCaption(caption, mediaKey)) {
                     items.remove(i);
                     removed++;
-                    if (removed <= 5) diagLog("drop [media_or_ad] tags=" + tags);
+                    if (removed <= 5) diagLog("drop [" + mediaKey + "] tags=" + hashtagsIn(caption));
                 }
             }
             if (removed > 0) {
@@ -253,6 +288,17 @@ public final class HashtagGate {
             }
         }
         return false;
+    }
+
+    /**
+     * Decide whether to keep an item based on its caption text.
+     * Fail-open: empty caption or no hashtags -> keep.
+     */
+    private static boolean keepCaption(String caption, String mediaKey) {
+        if (caption == null || caption.isEmpty()) return true;
+        Set<String> tags = hashtagsIn(caption);
+        if (tags.isEmpty()) return true;
+        return matchesEnabledCategories(tags);
     }
 
     /** Lower-cased hashtags found in the caption. */
